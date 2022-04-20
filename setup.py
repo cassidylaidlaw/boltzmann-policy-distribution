@@ -8,7 +8,7 @@ setup(
         'bpd.models',
     ],
     package_data={'bpd': ['py.typed']},
-    version='0.0.2',
+    version='0.0.3',
     license='MIT',
     description='Code for the ICLR 2022 paper "The Boltzmann Policy Distribution: Accounting for Systematic Suboptimality in Human Models"',
     author='Cassidy Laidlaw',
