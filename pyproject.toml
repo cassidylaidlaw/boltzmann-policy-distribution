@@ -1,0 +1,9 @@
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+exclude = ''
+
+[tool.pytest.ini_options]
+timeout = 180
+testpaths = ["tests"]

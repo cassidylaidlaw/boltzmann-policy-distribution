@@ -1,0 +1,6 @@
+flake8
+black
+mypy
+pytest
+pytest-timeout
+pytest-xdist
