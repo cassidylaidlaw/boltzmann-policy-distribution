@@ -2,7 +2,8 @@ venv
 __pycache__
 node_modules
 data
-figures
-overcooked-demo
 *.ipynb
 .DS_Store
+build
+*.egg-info
+*.whl

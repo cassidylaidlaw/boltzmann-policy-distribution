@@ -46,7 +46,7 @@ This section explains how to get started with using the code and how to run the 
 
 The [getting_started.ipynb](getting_started.ipynb) notebook shows how to use the BPD to predict human behavior in a new environment. It is also available on Google Colab via the link below.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cassidylaidlaw/boltzmann-policy-distribution/blob/master/getting_started.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cassidylaidlaw/boltzmann-policy-distribution/blob/main/getting_started.ipynb)
 
 ### Experiments
 
