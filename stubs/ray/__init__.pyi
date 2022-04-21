@@ -1,6 +1,8 @@
 import ray.ray_constants as ray_constants
 import logging
 
+__version__: str
+
 def init(
     address=None,
     *,
