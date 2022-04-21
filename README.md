@@ -9,7 +9,7 @@ The code can be downloaded as this GitHub repository or installed as a pip packa
 ### As a repository
 
 
-1. Install [Python 3](https://www.python.org/).
+1. Install [Python](https://www.python.org/) 3.8 or later (3.7 might work but may not be able to load pretrained checkpoints).
 2. Clone the repository:
 
         git clone https://github.com/cassidylaidlaw/boltzmann-policy-distribution.git
