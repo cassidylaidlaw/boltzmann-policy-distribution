@@ -218,7 +218,6 @@ def test_train_br(random_seed, tmp_path):
     ]
     runs_with_br = [run for run in all_runs if f"{run}_br" in all_runs]
     run_name = random.choice(runs_with_br)
-    run_name = "random_0.2"
     run_dir = os.path.join("data/checkpoints", layout_name, run_name)
     checkpoint_fname = glob.glob(os.path.join(run_dir, "*", "checkpoint-*[0-9]"))[0]
 

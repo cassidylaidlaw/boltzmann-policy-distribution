@@ -5,6 +5,7 @@ from typing import Any, Callable, List, Optional, Type, cast
 from ray.rllib.evaluation.worker_set import WorkerSet
 from ray.rllib.policy.policy import Policy
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
+from ray.rllib.agents.trainer import COMMON_CONFIG
 from typing_extensions import Literal
 from overcooked_ai_py.mdp.actions import Action
 from logging import Logger
@@ -517,6 +518,9 @@ def make_overcooked_sacred_config(ex: Experiment):  # noqa
             "input": input,
             "input_evaluation": [],
         }
+
+        if "disable_env_checking" in COMMON_CONFIG:
+            config["disable_env_checking"] = True
 
         TrainerClass: Type[Trainer]
         if run == "bpd":

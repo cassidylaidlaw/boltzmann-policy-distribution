@@ -7,6 +7,7 @@ import glob
 import ray
 from ray.rllib.utils.typing import TrainerConfigDict, ModelConfigDict
 from ray.rllib.offline.json_writer import JsonWriter
+from ray.rllib.agents.trainer import COMMON_CONFIG
 
 from sacred import Experiment
 from sacred import SETTINGS as sacred_settings
@@ -135,6 +136,9 @@ def sacred_config():
             },
         },
     }
+
+    if "disable_env_checking" in COMMON_CONFIG:
+        config["disable_env_checking"] = True
 
     del env
 

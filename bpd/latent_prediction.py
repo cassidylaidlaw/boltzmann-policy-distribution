@@ -1,4 +1,5 @@
-from typing import TypedDict, cast
+from typing import cast
+from typing_extensions import TypedDict
 from gym import spaces
 import torch
 import tqdm

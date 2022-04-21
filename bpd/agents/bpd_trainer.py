@@ -1,4 +1,4 @@
-from typing import Tuple, Type, cast
+from typing import Tuple, Type
 import numpy as np
 import torch
 from torch.distributions import Dirichlet
@@ -50,67 +50,74 @@ class BPDMetrics:
         self.workers = workers
         self.num_samples = num_samples
 
+    def _add_metrics_for_policy(self, result, policy: Policy, policy_id: str) -> None:
+        assert isinstance(policy, BPDPolicy)
+        assert policy.model is not None
+
+        obs = policy._sample_obs[None].repeat_interleave(self.num_samples, dim=0)
+        policy_output = policy.model(
+            {
+                SampleBatch.OBS: policy.randomize_latent_in_obs(
+                    obs,
+                    action_space_size=policy.model.action_space.n,
+                    all_unique=True,
+                )
+            }
+        )[0].softmax(dim=1)
+        prior_output = Dirichlet(
+            torch.ones_like(policy_output) * policy.config["prior_concentration"]
+        ).sample()
+
+        policy_output_projected, vertices = project_probabilities(policy_output)
+        prior_output_projected, _ = project_probabilities(prior_output)
+
+        policy_output_projected = policy_output_projected.detach().cpu()
+        prior_output_projected = prior_output_projected.detach().cpu()
+        vertices = vertices.detach().cpu()
+
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(4, 4))
+        ax = fig.add_subplot(111)
+        ax.scatter(
+            policy_output_projected[:, 0],
+            policy_output_projected[:, 1],
+            label="Policies",
+            alpha=0.2,
+        )
+        ax.scatter(
+            prior_output_projected[:, 0],
+            prior_output_projected[:, 1],
+            label="Prior",
+            alpha=0.2,
+        )
+        vertices = torch.cat([vertices, vertices[:1]], dim=0)
+        ax.plot(vertices[:, 0], vertices[:, 1], c="k")
+        ax.legend()
+        ax.axis("off")
+        fig.tight_layout()
+        fig.canvas.draw()
+        dist_image = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
+        dist_image = dist_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        plt.close(fig)
+        result[
+            f"info/learner/{policy_id}/discriminator/distributions"
+        ] = dist_image.transpose(2, 0, 1)[None, None]
+
     def __call__(self, result):
-        policy_ids = self.workers.trainable_policies()
-        for policy_id in policy_ids:
-            policy = cast(
-                BPDPolicy,
-                self.workers.local_worker().get_policy(policy_id),
+        if hasattr(self.workers, "foreach_policy_to_train"):
+            self.workers.local_worker().foreach_policy_to_train(  # type: ignore
+                lambda policy, policy_id, **kwargs: self._add_metrics_for_policy(
+                    result, policy, policy_id
+                )
             )
-            assert policy.model is not None
-
-            obs = policy._sample_obs[None].repeat_interleave(self.num_samples, dim=0)
-            policy_output = policy.model(
-                {
-                    SampleBatch.OBS: policy.randomize_latent_in_obs(
-                        obs,
-                        action_space_size=policy.model.action_space.n,
-                        all_unique=True,
-                    )
-                }
-            )[0].softmax(dim=1)
-            prior_output = Dirichlet(
-                torch.ones_like(policy_output) * policy.config["prior_concentration"]
-            ).sample()
-
-            policy_output_projected, vertices = project_probabilities(policy_output)
-            prior_output_projected, _ = project_probabilities(prior_output)
-
-            policy_output_projected = policy_output_projected.detach().cpu()
-            prior_output_projected = prior_output_projected.detach().cpu()
-            vertices = vertices.detach().cpu()
-
-            import matplotlib.pyplot as plt
-
-            fig = plt.figure(figsize=(4, 4))
-            ax = fig.add_subplot(111)
-            ax.scatter(
-                policy_output_projected[:, 0],
-                policy_output_projected[:, 1],
-                label="Policies",
-                alpha=0.2,
+        else:
+            # For RLlib versions < 1.12
+            self.workers.local_worker().foreach_trainable_policy(
+                lambda policy, policy_id, **kwargs: self._add_metrics_for_policy(
+                    result, policy, policy_id
+                )
             )
-            ax.scatter(
-                prior_output_projected[:, 0],
-                prior_output_projected[:, 1],
-                label="Prior",
-                alpha=0.2,
-            )
-            vertices = torch.cat([vertices, vertices[:1]], dim=0)
-            ax.plot(vertices[:, 0], vertices[:, 1], c="k")
-            ax.legend()
-            ax.axis("off")
-            fig.tight_layout()
-            fig.canvas.draw()
-            dist_image = np.fromstring(
-                fig.canvas.tostring_rgb(), dtype=np.uint8, sep=""
-            )
-            dist_image = dist_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            plt.close(fig)
-            result[
-                f"info/learner/{policy_id}/discriminator/distributions"
-            ] = dist_image.transpose(2, 0, 1)[None, None]
-
         return result
 
 

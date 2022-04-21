@@ -1,4 +1,3 @@
-from ray.rllib.utils.typing import TensorType
 from bpd.training_utils import load_trainer
 import pickle
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -20,6 +19,8 @@ from ray.rllib.policy.sample_batch import SampleBatch
 from ray.tune.registry import ENV_CREATOR, register_env, _global_registry
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from ray.rllib.agents.callbacks import DefaultCallbacks
+from ray.rllib.utils.typing import TensorType
+from ray.rllib.models.preprocessors import get_preprocessor, Preprocessor
 
 from gym import spaces
 import copy
@@ -84,11 +85,16 @@ class RlLibAgent(Agent):
         if prev_obs is None:
             prev_obs = np.zeros_like(my_obs)
 
+        obs_space = self.policy.observation_space
+        while getattr(obs_space, "original_space", None) is not None:
+            obs_space = obs_space.original_space
+        preprocessor: Preprocessor = get_preprocessor(obs_space)(obs_space)
+
         input_dict = SampleBatch(
             {
-                SampleBatch.CUR_OBS: self._add_dim_to_obs(my_obs),
+                SampleBatch.CUR_OBS: preprocessor.transform(my_obs)[np.newaxis],
                 SampleBatch.PREV_ACTIONS: np.array([self.prev_action]),
-                "prev_obs": self._add_dim_to_obs(prev_obs),
+                "prev_obs": preprocessor.transform(prev_obs)[np.newaxis],
                 "infos": np.array([{"other_action": self.other_player_action}]),
             }
         )

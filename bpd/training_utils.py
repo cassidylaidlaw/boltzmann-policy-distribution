@@ -11,6 +11,7 @@ from ray.rllib.policy.policy import Policy
 from ray.rllib.utils.typing import PolicyID, TrainerConfigDict
 from ray.tune.logger import UnifiedLogger
 from ray.tune.registry import get_trainable_cls
+from ray.rllib.agents.trainer import COMMON_CONFIG
 
 
 def build_logger_creator(log_dir: str, experiment_name: str):
@@ -77,6 +78,10 @@ def load_trainer_config(checkpoint_path: str) -> TrainerConfigDict:
         config["distillation_mapping_fn"] = config["multiagent"].pop(
             "distillation_mapping_fn"
         )
+
+    # Another fix for newer versions of RLlib.
+    if "disable_env_checking" in COMMON_CONFIG:
+        config.setdefault("disable_env_checking", True)
 
     # Fix to remove some old keys in the config dict.
     for old_key in [

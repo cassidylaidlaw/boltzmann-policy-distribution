@@ -20,6 +20,7 @@ setup(
         'torch>=1.9.0',
         'ray[rllib]>=1.11.0',
         'matplotlib>=3.4.1',
+        'typing_extensions>=4',
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',

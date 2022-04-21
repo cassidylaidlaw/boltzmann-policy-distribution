@@ -34,7 +34,6 @@ from ray.rllib.evaluation.worker_set import WorkerSet
 from ray.rllib.execution.rollout_ops import (
     ParallelRollouts,
     ConcatBatches,
-    SelectExperiences,
 )
 from ray.rllib.execution.train_ops import TrainOneStep
 from ray.rllib.execution.metric_ops import StandardMetricsReporting
@@ -57,6 +56,7 @@ from ray.rllib.utils.torch_utils import (
     apply_grad_clipping,
     sequence_mask,
 )
+from bpd.agents.utils import get_select_experiences
 
 from bpd.training_utils import load_policies_from_checkpoint
 
@@ -399,82 +399,91 @@ class PredictionMetrics:
         self.config = config
         self.workers = workers
 
+    def _add_metrics_for_policy(
+        self, result, policy: Policy, policy_id: PolicyID
+    ) -> None:
+        assert isinstance(policy, DistillationPredictionPolicy)
+
+        result[f"info/learner/{policy_id}/initial_cross_entropy"] = np.mean(
+            policy._initial_cross_entropy
+        )
+        policy._initial_cross_entropy = []
+
+        if not policy.is_recurrent():
+            return
+
+        batch = policy._last_batch
+        batch.set_training(False)
+        assert policy.model is not None
+        policy_output, _ = policy.model(batch)
+        cross_entropy = F.cross_entropy(
+            policy_output, batch[SampleBatch.ACTIONS], reduction="none"
+        )
+
+        seq_lens = batch["seq_lens"]
+        if isinstance(seq_lens, np.ndarray):
+            seq_lens = torch.Tensor(seq_lens).int()
+        max_seq_len = cross_entropy.shape[0] // seq_lens.shape[0]
+        cross_entropy = add_time_dimension(
+            cross_entropy,
+            max_seq_len=max_seq_len,
+            framework="torch",
+            time_major=False,
+        )
+
+        bucket_size = 10
+        cross_entropy_bucketed = cross_entropy.reshape(
+            (
+                cross_entropy.size()[0],
+                cross_entropy.size()[1] // bucket_size,
+                bucket_size,
+            )
+        )
+        bucket_cross_entropies = cross_entropy_bucketed.mean(dim=2)
+        mean_cross_entropies = bucket_cross_entropies.mean(dim=0).detach().cpu()
+        std_cross_entropies = bucket_cross_entropies.std(dim=0).detach().cpu()
+        t = np.arange(len(mean_cross_entropies)) * bucket_size
+
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(4, 4))
+        ax = fig.add_subplot(111)
+        ax.fill_between(
+            t,
+            mean_cross_entropies - std_cross_entropies,
+            mean_cross_entropies + std_cross_entropies,
+            alpha=0.1,
+        )
+        ax.plot(t, mean_cross_entropies)
+        ax.plot(t, np.ones_like(t) * np.log(policy_output.shape[-1]), c="k", ls="--")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Cross-entropy")
+        fig.tight_layout()
+        fig.canvas.draw()
+        plot_image = np.frombuffer(
+            fig.canvas.tostring_rgb(),
+            dtype=np.uint8,
+        )
+        plot_image = plot_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        plt.close(fig)
+        result[f"info/learner/{policy_id}/cross_entropy_plot"] = plot_image.transpose(
+            2, 0, 1
+        )[None, None]
+
     def __call__(self, result):
-        policy_ids = self.workers.trainable_policies()
-        for policy_id in policy_ids:
-            policy = cast(
-                DistillationPredictionPolicy,
-                self.workers.local_worker().get_policy(policy_id),
-            )
-
-            result[f"info/learner/{policy_id}/initial_cross_entropy"] = np.mean(
-                policy._initial_cross_entropy
-            )
-            policy._initial_cross_entropy = []
-
-            if not policy.is_recurrent():
-                continue
-
-            batch = policy._last_batch
-            batch.set_training(False)
-            assert policy.model is not None
-            policy_output, _ = policy.model(batch)
-            cross_entropy = F.cross_entropy(
-                policy_output, batch[SampleBatch.ACTIONS], reduction="none"
-            )
-
-            seq_lens = batch["seq_lens"]
-            if isinstance(seq_lens, np.ndarray):
-                seq_lens = torch.Tensor(seq_lens).int()
-            max_seq_len = cross_entropy.shape[0] // seq_lens.shape[0]
-            cross_entropy = add_time_dimension(
-                cross_entropy,
-                max_seq_len=max_seq_len,
-                framework="torch",
-                time_major=False,
-            )
-
-            bucket_size = 10
-            cross_entropy_bucketed = cross_entropy.reshape(
-                (
-                    cross_entropy.size()[0],
-                    cross_entropy.size()[1] // bucket_size,
-                    bucket_size,
+        if hasattr(self.workers, "foreach_policy_to_train"):
+            self.workers.local_worker().foreach_policy_to_train(  # type: ignore
+                lambda policy, policy_id, **kwargs: self._add_metrics_for_policy(
+                    result, policy, policy_id
                 )
             )
-            bucket_cross_entropies = cross_entropy_bucketed.mean(dim=2)
-            mean_cross_entropies = bucket_cross_entropies.mean(dim=0).detach().cpu()
-            std_cross_entropies = bucket_cross_entropies.std(dim=0).detach().cpu()
-            t = np.arange(len(mean_cross_entropies)) * bucket_size
-
-            import matplotlib.pyplot as plt
-
-            fig = plt.figure(figsize=(4, 4))
-            ax = fig.add_subplot(111)
-            ax.fill_between(
-                t,
-                mean_cross_entropies - std_cross_entropies,
-                mean_cross_entropies + std_cross_entropies,
-                alpha=0.1,
+        else:
+            # For RLlib versions < 1.12
+            self.workers.local_worker().foreach_trainable_policy(
+                lambda policy, policy_id, **kwargs: self._add_metrics_for_policy(
+                    result, policy, policy_id
+                )
             )
-            ax.plot(t, mean_cross_entropies)
-            ax.plot(
-                t, np.ones_like(t) * np.log(policy_output.shape[-1]), c="k", ls="--"
-            )
-            ax.set_xlabel("Time")
-            ax.set_ylabel("Cross-entropy")
-            fig.tight_layout()
-            fig.canvas.draw()
-            plot_image = np.frombuffer(
-                fig.canvas.tostring_rgb(),
-                dtype=np.uint8,
-            )
-            plot_image = plot_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            plt.close(fig)
-            result[
-                f"info/learner/{policy_id}/cross_entropy_plot"
-            ] = plot_image.transpose(2, 0, 1)[None, None]
-
         return result
 
 
@@ -489,9 +498,7 @@ def execution_plan(
     ).for_each(ProcessExperiences(config["multiagent"]["policies"], workers))
 
     # Collect batches for the trainable policies.
-    selected_rollouts = rollouts_multiagent.for_each(
-        SelectExperiences(workers.trainable_policies())
-    )
+    selected_rollouts = rollouts_multiagent.for_each(get_select_experiences(workers))
     # Concatenate the SampleBatches into one.
     combined_rollouts = selected_rollouts.combine(
         ConcatBatches(

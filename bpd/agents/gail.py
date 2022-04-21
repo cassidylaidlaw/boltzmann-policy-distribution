@@ -10,7 +10,6 @@ from ray.rllib.execution.metric_ops import StandardMetricsReporting
 from ray.rllib.execution.rollout_ops import (
     ConcatBatches,
     ParallelRollouts,
-    SelectExperiences,
     StandardizeFields,
 )
 from ray.rllib.models import ModelV2, ActionDistribution
@@ -43,6 +42,8 @@ from ray.rllib.agents.ppo.ppo import (
     warn_about_bad_reward_scales,
 )
 from ray.rllib.utils.numpy import convert_to_numpy
+
+from bpd.agents.utils import get_select_experiences
 
 from .bpd_policy import ModelWithDiscriminator
 
@@ -302,7 +303,7 @@ class GailTrainer(PPOTrainer):
         )
 
         # Collect batches for the trainable policies.
-        rollouts = rollouts.for_each(SelectExperiences(workers.trainable_policies()))
+        rollouts = rollouts.for_each(get_select_experiences(workers))
 
         # Replace reward using discriminator.
         rollouts = rollouts.for_each(DiscriminatorReward(workers))
