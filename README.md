@@ -68,7 +68,7 @@ Many experiments also log metrics to TensorBoard during training. Logs and check
 
 To calculate the BPD for Overcooked, we used the following command:
 
-    python -m maxent_policy_rl.experiments.train_overcooked with run="bpd" num_workers=25 num_training_iters=2000 layout_name="cramped_room" temperature=0.1 prior_concentration=0.2 reward_shaping_horizon=20000000 latents_per_iteration=250  share_dense_reward=True train_batch_size=100000 discriminate_sequences=True max_seq_len=10 entropy_coeff_start=0 entropy_coeff_end=0 latent_size=1000 sgd_minibatch_size=8000 use_latent_attention=True
+    python -m bpd.experiments.train_overcooked with run="bpd" num_workers=25 num_training_iters=2000 layout_name="cramped_room" temperature=0.1 prior_concentration=0.2 reward_shaping_horizon=20000000 latents_per_iteration=250  share_dense_reward=True train_batch_size=100000 discriminate_sequences=True max_seq_len=10 entropy_coeff_start=0 entropy_coeff_end=0 latent_size=1000 sgd_minibatch_size=8000 use_latent_attention=True
 
 Some useful parameters include
 
