@@ -87,7 +87,7 @@ class RlLibAgent(Agent):
         assert self.policy.model is not None
         if hasattr(self.policy.model, "get_initial_state"):
             self.rnn_state = [
-                np.expand_dims(state.cpu(), axis=0)
+                np.expand_dims(state.cpu(), axis=0)  # type: ignore
                 for state in self.policy.model.get_initial_state()
             ]
         elif hasattr(self.policy, "get_initial_state"):
@@ -128,8 +128,8 @@ class RlLibAgent(Agent):
         self.other_player_action = Action.ACTION_TO_INDEX[action]
 
     def _add_dim_to_obs(
-        self, obs: Union[Tuple[np.ndarray], np.ndarray]
-    ) -> Union[Tuple[np.ndarray], np.ndarray]:
+        self, obs: Union[Tuple[np.ndarray, ...], np.ndarray]
+    ) -> Union[Tuple[np.ndarray, ...], np.ndarray]:
         if isinstance(obs, tuple):
             return tuple(obs_part[np.newaxis] for obs_part in obs)
         else:

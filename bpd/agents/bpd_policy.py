@@ -30,7 +30,7 @@ class ModelWithDiscriminator(TorchModelV2):
         seq_lens: Optional[torch.Tensor] = None,
         detached: bool = False,
     ) -> torch.Tensor:
-        ...
+        raise NotImplementedError()
 
 
 class BPDPolicy(PPOTorchPolicy):
@@ -88,7 +88,7 @@ class BPDPolicy(PPOTorchPolicy):
         )
 
         if hasattr(model, "logits"):
-            model_out = model.logits()  # type: ignore
+            model_out = model.logits()
         else:
             model_out, _ = model(train_batch)
 

@@ -664,12 +664,10 @@ class OvercookedRecurrentStateModel(OvercookedPPOModel):
                 else:
                     self.view_requirements[key] = view_requirement
 
-    def named_parameters(
-        self, prefix: str = "", recurse: bool = True
-    ) -> Iterator[Tuple[str, nn.Parameter]]:
+    def named_parameters(self, *args, **kwargs) -> Iterator[Tuple[str, nn.Parameter]]:
         # Don't include recurrent model's parameters since we don't want to further
         # optimize them.
-        for name, parameter in super().named_parameters(prefix=prefix, recurse=recurse):
+        for name, parameter in super().named_parameters(*args, **kwargs):
             if not name.startswith("recurrent_model."):
                 yield name, parameter
 
