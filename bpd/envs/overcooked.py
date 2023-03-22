@@ -87,7 +87,7 @@ class RlLibAgent(Agent):
         assert self.policy.model is not None
         if hasattr(self.policy.model, "get_initial_state"):
             self.rnn_state = [
-                np.expand_dims(state.cpu(), axis=0)  # type: ignore
+                np.expand_dims(state.cpu(), axis=0)
                 for state in self.policy.model.get_initial_state()
             ]
         elif hasattr(self.policy, "get_initial_state"):
