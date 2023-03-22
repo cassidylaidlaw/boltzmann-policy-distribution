@@ -28,7 +28,7 @@ jobs:
 
       - name: Install pip requirements
         run: |
-          pip install --upgrade pip setuptools wheel
+          pip install --upgrade pip 'setuptools<65.5.0' wheel
           pip install -r requirements.txt
           pip install -r requirements_dev.txt
 
