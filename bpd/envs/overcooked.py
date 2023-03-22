@@ -1,12 +1,27 @@
 from bpd.training_utils import load_trainer
 import pickle
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+    Callable,
+    cast,
+)
 from typing_extensions import Literal, TypedDict
 from overcooked_ai_py.mdp.actions import Action
 from overcooked_ai_py.mdp.overcooked_mdp import (
     EVENT_TYPES,
     OvercookedState,
     PlayerState,
+    Direction,
+    OvercookedGridworld,
+    ObjectState,
+    SoupState,
 )
 from overcooked_ai_py.agents.benchmarking import AgentEvaluator
 from overcooked_ai_py.agents.agent import Agent, AgentPair
@@ -16,16 +31,19 @@ from ray.rllib.evaluation.rollout_worker import RolloutWorker
 from ray.rllib.evaluation.sample_batch_builder import SampleBatchBuilder
 from ray.rllib.policy.torch_policy import TorchPolicy
 from ray.rllib.policy.sample_batch import SampleBatch
+from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.tune.registry import ENV_CREATOR, register_env, _global_registry
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from ray.rllib.agents.callbacks import DefaultCallbacks
 from ray.rllib.utils.typing import TensorType
+from ray.rllib.utils.numpy import convert_to_numpy
 from ray.rllib.models.preprocessors import get_preprocessor, Preprocessor
 
 from gym import spaces
 import copy
 import numpy as np
 import inspect
+import random
 
 
 class RlLibAgent(Agent):
@@ -35,14 +53,34 @@ class RlLibAgent(Agent):
 
     other_player_action: int
     prev_obs: Optional[np.ndarray]
+    human_data_to_condition_on: Optional[List[SampleBatch]]
+    current_human_data: Optional[SampleBatch]
 
-    def __init__(self, policy: TorchPolicy, agent_index, featurize_fn):
+    def __init__(
+        self,
+        policy: TorchPolicy,
+        agent_index,
+        featurize_fn,
+        human_data_to_condition_on: Optional[List[SampleBatch]] = None,
+    ):
         self.policy = policy
         self.agent_index = agent_index
         self.featurize = featurize_fn
         self.prev_action = 0
         self.prev_obs = None
         self.other_player_action = 0
+
+        self.human_data_to_condition_on = human_data_to_condition_on
+        if self.human_data_to_condition_on:
+            for human_data in self.human_data_to_condition_on:
+                human_data["prev_obs"] = np.roll(human_data[SampleBatch.OBS], 1, 0)
+                human_data["prev_obs"][0, :] = 0
+        self.current_human_data = None
+
+        obs_space = self.policy.observation_space
+        while getattr(obs_space, "original_space", None) is not None:
+            obs_space = obs_space.original_space
+        self.preprocessor: Preprocessor = get_preprocessor(obs_space)(obs_space)
 
     def reset(self):
         # Get initial rnn states and add batch dimension to each
@@ -59,6 +97,28 @@ class RlLibAgent(Agent):
             ]
         else:
             self.rnn_state = []
+
+        if self.human_data_to_condition_on:
+            # Run human data through the network, get the resulting state, and save
+            # it so we use for calculating actions.
+            human_data = random.choice(self.human_data_to_condition_on)
+
+            if self.rnn_state and len(self.rnn_state[0]) > 1:
+                import torch
+
+                state_batches = [
+                    torch.from_numpy(state).to(self.policy.device)
+                    for state in self.rnn_state
+                ]
+                assert isinstance(self.policy.model, TorchModelV2)
+                _, states = self.policy.model(
+                    self.policy._lazy_tensor_dict(human_data),
+                    state_batches,
+                    seq_lens=np.array([len(human_data)]),
+                )
+                self.rnn_state = [state.detach().cpu().numpy() for state in states]
+            else:
+                self.current_human_data = human_data
 
     def set_other_player_action(self, action: Action):
         """
@@ -85,26 +145,61 @@ class RlLibAgent(Agent):
         if prev_obs is None:
             prev_obs = np.zeros_like(my_obs)
 
-        obs_space = self.policy.observation_space
-        while getattr(obs_space, "original_space", None) is not None:
-            obs_space = obs_space.original_space
-        preprocessor: Preprocessor = get_preprocessor(obs_space)(obs_space)
-
         input_dict = SampleBatch(
             {
-                SampleBatch.CUR_OBS: preprocessor.transform(my_obs)[np.newaxis],
+                SampleBatch.CUR_OBS: self.preprocessor.transform(my_obs)[np.newaxis],
                 SampleBatch.PREV_ACTIONS: np.array([self.prev_action]),
-                "prev_obs": preprocessor.transform(prev_obs)[np.newaxis],
+                "prev_obs": self.preprocessor.transform(prev_obs)[np.newaxis],
                 "infos": np.array([{"other_action": self.other_player_action}]),
             }
         )
-        for state_index, state in enumerate(self.rnn_state):
-            input_dict[f"state_in_{state_index}"] = state
+        if self.current_human_data is not None:
+            import torch
+
+            input_dict = cast(
+                SampleBatch,
+                SampleBatch.concat_samples(
+                    [
+                        SampleBatch(
+                            {
+                                k: v
+                                for k, v in self.current_human_data.items()
+                                if k in input_dict
+                            }
+                        ),
+                        input_dict,
+                    ]
+                ),
+            )
+            state_batches = [
+                torch.from_numpy(state).to(self.policy.device)[None]
+                for state in self.policy.get_initial_state()
+            ]
+            assert self.policy.model is not None
+            action_dist_inputs, state_out = self.policy.model(
+                self.policy._lazy_tensor_dict(input_dict),
+                state_batches,
+                seq_lens=np.array([len(input_dict)]),
+            )
+            action_dist_inputs = action_dist_inputs[-1:]
+            state_out = [state[-1:] for state in state_out]
+            extra_fetches = {SampleBatch.ACTION_DIST_INPUTS: action_dist_inputs}
+            assert self.policy.dist_class is not None
+            action_dist = self.policy.dist_class(action_dist_inputs, self.policy.model)
+            actions = action_dist.sample()
+            results: Tuple[
+                TensorType, List[TensorType], Dict[str, TensorType]
+            ] = convert_to_numpy((actions, state_out, extra_fetches))
+        else:
+            for state_index, state in enumerate(self.rnn_state):
+                input_dict[f"state_in_{state_index}"] = state
+
+            results = self.policy.compute_actions_from_input_dict(input_dict)
 
         if store_prev_obs:
             self.prev_obs = my_obs
 
-        return self.policy.compute_actions_from_input_dict(input_dict)
+        return results
 
     def action_probabilities(self, state: OvercookedState):
         """
@@ -785,12 +880,15 @@ class EvaluationResults(TypedDict):
 
 def evaluate(
     eval_params,
-    mdp_params,
+    mdp_params: dict,
     outer_shape,
     agent_0_policy,
     agent_1_policy,
     agent_0_featurize_fn=None,
     agent_1_featurize_fn=None,
+    env_params: dict = {},
+    agent_0_params: dict = {},
+    agent_1_params: dict = {},
 ) -> EvaluationResults:
     """
     Used to visualize rollouts of trained policies
@@ -805,7 +903,9 @@ def evaluate(
     """
     print("eval mdp params", mdp_params)
     evaluator = get_base_ae(
-        mdp_params, {"horizon": eval_params["ep_length"], "num_mdp": 1}, outer_shape
+        mdp_params,
+        {"horizon": eval_params["ep_length"], "num_mdp": 1, **env_params},
+        outer_shape,
     )
 
     # Override pre-processing functions with defaults if necessary
@@ -822,10 +922,16 @@ def evaluate(
 
     # Wrap rllib policies in overcooked agents to be compatible with Evaluator code
     agent0 = RlLibAgent(
-        agent_0_policy, agent_index=0, featurize_fn=agent_0_featurize_fn
+        agent_0_policy,
+        agent_index=0,
+        featurize_fn=agent_0_featurize_fn,
+        **agent_0_params,
     )
     agent1 = RlLibAgent(
-        agent_1_policy, agent_index=1, featurize_fn=agent_1_featurize_fn
+        agent_1_policy,
+        agent_index=1,
+        featurize_fn=agent_1_featurize_fn,
+        **agent_1_params,
     )
 
     # Compute rollouts
@@ -895,6 +1001,44 @@ def get_base_ae(mdp_params, env_params, outer_shape=None, mdp_params_schedule_fn
         # should not reach this case
         raise NotImplementedError()
     return ae
+
+
+def get_littered_start_state_fn(
+    num_littered_objects: int,
+    mdp: OvercookedGridworld,
+    base_start_state_fn: Optional[Callable[[], OvercookedState]] = None,
+):
+    def littered_start_state_fn() -> OvercookedState:
+        if base_start_state_fn is None:
+            state = mdp.get_standard_start_state()
+        else:
+            state = base_start_state_fn()
+        reachable_counter_positions = []
+        empty_positions = mdp.get_valid_player_positions()
+        for counter_position in mdp.get_counter_locations():
+            for direction in Direction.ALL_DIRECTIONS:
+                adjacent_position = Action.move_in_direction(
+                    counter_position, direction
+                )
+                if adjacent_position in empty_positions:
+                    reachable_counter_positions.append(counter_position)
+
+        for counter_position in random.sample(
+            reachable_counter_positions, num_littered_objects
+        ):
+            littered_object = random.choice(
+                [
+                    ObjectState("onion", counter_position),
+                    ObjectState("dish", counter_position),
+                    SoupState.get_soup(counter_position, num_onions=1, finished=True),
+                    SoupState.get_soup(counter_position, num_onions=2, finished=True),
+                    SoupState.get_soup(counter_position, num_onions=3, finished=True),
+                ]
+            )
+            state.add_object(littered_object, counter_position)
+        return state
+
+    return littered_start_state_fn
 
 
 # Returns the required arguments as inspect.Parameter objects in a list

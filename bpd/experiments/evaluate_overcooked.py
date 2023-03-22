@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Type
+from typing import Dict, Optional, Type, List
 import numpy as np
 from tqdm import tqdm
 from typing_extensions import Literal
@@ -9,17 +9,19 @@ from gym import spaces
 
 # Sacred setup (must be before rllib imports)
 from sacred import Experiment
+from sacred import SETTINGS as SACRED_SETTINGS
 
 import ray
 from ray.rllib.agents.trainer import Trainer
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.agents.ppo.ppo import PPOTrainer
 from ray.rllib.policy.torch_policy import TorchPolicy
+from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.typing import PolicyID
 
 from overcooked_ai_py.agents.benchmarking import AgentEvaluator
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
+from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState, OvercookedGridworld
 
 from bpd.training_utils import load_trainer
 from bpd.models.overcooked_models import (
@@ -30,10 +32,18 @@ from bpd.agents.bpd_trainer import BPDTrainer
 from bpd.agents.distillation_prediction import (
     DistillationPredictionTrainer,
 )
-from bpd.envs.overcooked import EpisodeInformation, evaluate
+from bpd.envs.overcooked import (
+    EpisodeInformation,
+    evaluate,
+    get_littered_start_state_fn,
+    EvaluationResults,
+    load_human_trajectories_as_sample_batch,
+)
 from bpd.agents.bc import BCTrainer
 from bpd.agents.gail import GailTrainer
 
+
+SACRED_SETTINGS.CONFIG.READ_ONLY_CONFIG = False
 ex = Experiment("evaluate_overcooked")
 
 
@@ -63,6 +73,9 @@ def config():
     run_1: RunStr = run_0
     checkpoint_path_1 = checkpoint_path_0  # noqa: F841
     policy_id_1 = default_policy_ids[run_1]  # noqa: F841
+    human_data_fname = None  # noqa: F841
+    condition_policy_0_on_human_data = False
+    condition_policy_1_on_human_data = condition_policy_0_on_human_data  # noqa: F841
 
     layout_name = "cramped_room"
     rew_shaping_params = {
@@ -85,6 +98,15 @@ def config():
         "num_games": num_games,
         "display": display,
     }
+    num_littered_objects = 0
+    start_state_fn = get_littered_start_state_fn(
+        num_littered_objects, OvercookedGridworld.from_layout_name(layout_name)
+    )
+    env_params = {  # noqa: F841
+        "horizon": ep_length,
+        "start_state_fn": start_state_fn,
+        "num_mdp": 1,
+    }
 
     # Whether to evaluate with flipped starting positions.
     evaluate_flipped = False  # noqa: F841
@@ -99,6 +121,17 @@ def config():
         out_path = None  # noqa: F841
 
 
+def remove_start_state_fn(results: EvaluationResults):
+    old_env_params = results["env_params"]
+    new_env_params = []
+    for env_params in old_env_params:
+        env_params = dict(env_params)
+        del env_params["start_state_fn"]
+        new_env_params.append(env_params)
+    results["env_params"] = new_env_params
+    return results
+
+
 @ex.automain
 def main(
     run_0: RunStr,
@@ -107,8 +140,12 @@ def main(
     run_1: RunStr,
     checkpoint_path_1: str,
     policy_id_1: PolicyID,
+    human_data_fname: Optional[str],
+    condition_policy_0_on_human_data: bool,
+    condition_policy_1_on_human_data: bool,
     eval_params: dict,
     mdp_params: dict,
+    env_params: dict,
     evaluate_flipped: bool,
     render_path: Optional[str],
     render_action_probs: bool,
@@ -133,7 +170,7 @@ def main(
     mdp_params = dict(mdp_params)
     evaluator = AgentEvaluator.from_layout_name(
         mdp_params=mdp_params,
-        env_params={"horizon": eval_params["ep_length"], "num_mdp": 1},
+        env_params=env_params,
     )
     env: OvercookedEnv = evaluator.env
 
@@ -156,14 +193,44 @@ def main(
         else:
             return env.lossless_state_encoding_mdp
 
+    human_data: Optional[List[SampleBatch]] = None
+    if human_data_fname is not None:
+        human_sample_batch = load_human_trajectories_as_sample_batch(
+            human_data_fname,
+            layout_name=mdp_params["layout_name"],
+            traj_indices={0},  # TODO: remove
+            featurize_fn_id="ppo",
+            _log=_log,
+        )
+        human_data = []
+        for episode_id in set(human_sample_batch[SampleBatch.EPS_ID]):
+            (episode_indices,) = np.nonzero(
+                human_sample_batch[SampleBatch.EPS_ID] == episode_id
+            )
+            episode_start = np.min(episode_indices)
+            episode_end = np.max(episode_indices) + 1
+            assert np.all(episode_indices == np.arange(episode_start, episode_end))
+            human_data.append(human_sample_batch.slice(episode_start, episode_end))
+
     results = evaluate(
         eval_params=dict(eval_params),
+        env_params=env_params,
         mdp_params=mdp_params,
         outer_shape=None,
         agent_0_policy=policy_0,
         agent_1_policy=policy_1,
         agent_0_featurize_fn=get_featurize_fn(policy_0),
         agent_1_featurize_fn=get_featurize_fn(policy_1),
+        agent_0_params={
+            "human_data_to_condition_on": human_data
+            if condition_policy_0_on_human_data
+            else None
+        },
+        agent_1_params={
+            "human_data_to_condition_on": human_data
+            if condition_policy_0_on_human_data
+            else None
+        },
     )
 
     ep_returns = [int(ep_return) for ep_return in results["ep_returns"]]
@@ -172,7 +239,7 @@ def main(
         "mean_return": float(np.mean(ep_returns)),
     }
     all_results = {
-        "results": results,
+        "results": remove_start_state_fn(results),
     }
     ep_returns_all = list(ep_returns)
 
@@ -196,7 +263,7 @@ def main(
             }
         )
         ep_returns_all.extend(ep_returns_flipped)
-        all_results["results_flippped"] = results_flipped
+        all_results["results_flippped"] = remove_start_state_fn(results_flipped)
 
     simple_results.update(
         {
